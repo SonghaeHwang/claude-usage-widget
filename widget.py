@@ -20,7 +20,7 @@ import winreg
 from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, simpledialog
 
 import pystray
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageGrab, ImageTk
@@ -38,16 +38,20 @@ PALETTES = {
         "fg": "#1d1d1f", "dim": "#4a4844", "solid": "#f3f2ee",
         "tint": (255, 255, 255, 175), "track": (0, 0, 0, 40), "line": (0, 0, 0, 35),
         "ok": "#cc5f3c", "warn": "#b87400", "bad": "#d03535", "sat": 1.4,
+        "seg": (255, 255, 255, 235), "off": (0, 0, 0, 70), "btn": (0, 0, 0, 30),
+        "field": "#ffffff", "field_line": "#c9c7c2",
     },
     "dark": {
         "fg": "#f2f1ee", "dim": "#b5b1a9", "solid": "#232325",
         "tint": (26, 26, 28, 195), "track": (255, 255, 255, 45), "line": (255, 255, 255, 40),
         "ok": "#e98d6e", "warn": "#e3a633", "bad": "#ff6f6f", "sat": 1.2,
+        "seg": (255, 255, 255, 75), "off": (255, 255, 255, 70), "btn": (255, 255, 255, 40),
+        "field": "#3a3a3c", "field_line": "#5c5c60",
     },
 }
 ICON_COLORS = {"ok": "#d97757", "warn": "#d39400", "bad": "#d03535", "error": "#8a8a8a"}
-THEME_LABELS = {"auto": "Windows 설정 따름", "light": "밝게", "dark": "어둡게"}
-ICON_LABELS = {"percent": "가장 높은 사용률 숫자", "plain": "고정 아이콘 (C)"}
+THEME_LABELS = {"auto": "자동", "light": "밝게", "dark": "어둡게"}
+ICON_LABELS = {"percent": "사용률 숫자", "plain": "고정 아이콘"}
 SPARK_SPAN = 24 * 3600
 RETRY_STEPS = (15, 30, 60, 120)
 
@@ -101,6 +105,38 @@ def blurred(img, pal):
     small = small.filter(ImageFilter.GaussianBlur(BLUR_RADIUS / 4))
     out = ImageEnhance.Color(small.resize((w, h), Image.BICUBIC)).enhance(pal["sat"]).convert("RGBA")
     return Image.alpha_composite(out, Image.new("RGBA", (w, h), pal["tint"]))
+
+
+def capture_corner(scale):
+    """작업 영역 오른쪽 아래(팝업이 뜰 자리)를 넉넉히 캡처한다. 실패하면 None."""
+    left, top, right, bottom = work_area()
+    w = min(int(460 * scale), right - left)
+    h = min(int(1000 * scale), bottom - top)
+    try:
+        return ImageGrab.grab((right - w, bottom - h, right, bottom))
+    except Exception:  # noqa: BLE001 - 캡처 불가 시 불투명 배경
+        return None
+
+
+def compose(backdrop, W, H, margin, shapes, pal, px):
+    """흐린 뒤 화면에서 팝업 자리만 잘라내고 선·게이지·버튼을 반투명으로 합성한다."""
+    if backdrop:
+        bw, bh = backdrop.size
+        bg = backdrop.crop((bw - margin - W, bh - margin - H, bw - margin, bh - margin))
+    else:
+        bg = Image.new("RGBA", (W, H), pal["solid"])
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    for kind, xy, color in shapes:
+        if kind == "line":
+            d.line(xy, fill=color, width=max(px(1), 1))
+        elif kind == "spark":
+            d.line(xy, fill=color, width=max(px(1.4), 1), joint="curve")
+        elif kind == "dot":
+            d.ellipse(xy, fill=color)
+        else:
+            d.rounded_rectangle(xy, radius=(xy[3] - xy[1]) / 2, fill=color)
+    return ImageTk.PhotoImage(Image.alpha_composite(bg, overlay))
 
 
 def pin_tray_icon():
@@ -398,14 +434,9 @@ class App:
         self.root.focus_force()
 
     def _capture_backdrop(self):
-        """작업 영역 오른쪽 아래(팝업이 뜰 자리)를 넉넉히 캡처해 흐리게 만들어 둔다."""
-        left, top, right, bottom = work_area()
-        w = min(int(460 * self.scale), right - left)
-        h = min(int(1000 * self.scale), bottom - top)
-        try:
-            self.backdrop = blurred(ImageGrab.grab((right - w, bottom - h, right, bottom)), self.pal)
-        except Exception:  # noqa: BLE001 - 캡처 불가 시 불투명 배경
-            self.backdrop = None
+        """팝업이 뜰 자리를 캡처해 흐리게 만들어 둔다."""
+        raw = capture_corner(self.scale)
+        self.backdrop = blurred(raw, self.pal) if raw else None
 
     def hide(self):
         self.root.withdraw()
@@ -505,23 +536,7 @@ class App:
             y += px(12)
         H = y + px(4)
 
-        # 배경: 흐린 뒤 화면에서 팝업 자리만 잘라내고 선·게이지를 반투명으로 합성
-        if self.backdrop:
-            bw, bh = self.backdrop.size
-            box = (bw - margin - W, bh - margin - H, bw - margin, bh - margin)
-            bg = self.backdrop.crop(box)
-        else:
-            bg = Image.new("RGBA", (W, H), pal["solid"])
-        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        d = ImageDraw.Draw(overlay)
-        for kind, xy, color in shapes:
-            if kind == "line":
-                d.line(xy, fill=color, width=max(px(1), 1))
-            elif kind == "spark":
-                d.line(xy, fill=color, width=max(px(1.4), 1), joint="curve")
-            else:
-                d.rounded_rectangle(xy, radius=(xy[3] - xy[1]) / 2, fill=color)
-        self.bg_photo = ImageTk.PhotoImage(Image.alpha_composite(bg, overlay))
+        self.bg_photo = compose(self.backdrop, W, H, margin, shapes, pal, px)
         c.tag_lower(c.create_image(0, 0, image=self.bg_photo, anchor="nw"))
 
         c.config(width=W, height=H)
@@ -592,78 +607,209 @@ class App:
     def open_settings(self):
         if self.dialog_open:
             return
+        self.hide()
         self.dialog_open = True
-        s = self.settings
-        win = tk.Toplevel(self.root)
-        win.title("Claude 사용량 설정")
-        win.resizable(False, False)
-        win.attributes("-topmost", True)
-        frm = ttk.Frame(win, padding=16)
-        frm.pack()
+        SettingsPanel(self)
 
-        theme = tk.StringVar(value=THEME_LABELS[s["theme"]])
-        icon = tk.StringVar(value=ICON_LABELS[s["icon_mode"]])
-        minutes = tk.StringVar(value=str(max(s["refresh_sec"] // 60, 1)))
-        thresholds = tk.StringVar(value=", ".join(map(str, s["alert_thresholds"])))
-        notify = tk.BooleanVar(value=s["notify"])
-        notify_reset = tk.BooleanVar(value=s["notify_reset"])
-        token = tk.BooleanVar(value=s["token_refresh"])
-        autostart = tk.BooleanVar(value=autostart_enabled())
 
-        def row(i, label, widget):
-            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=4, padx=(0, 12))
-            widget.grid(row=i, column=1, sticky="we", pady=4)
+class SettingsPanel:
+    """설정 팝오버. 사용량 팝업과 같은 반투명 재질 위에 컨트롤을 직접 그린다."""
 
-        row(0, "테마", ttk.Combobox(frm, textvariable=theme, state="readonly", width=22,
-                                  values=list(THEME_LABELS.values())))
-        row(1, "트레이 아이콘", ttk.Combobox(frm, textvariable=icon, state="readonly", width=22,
-                                        values=list(ICON_LABELS.values())))
-        row(2, "자동 갱신 주기 (분)", ttk.Spinbox(frm, textvariable=minutes, from_=1, to=60, width=6))
-        row(3, "알림 기준 (%)", ttk.Entry(frm, textvariable=thresholds, width=24))
-        checks = (("한도에 가까워지면 알림", notify), ("알렸던 한도가 리셋되면 알림", notify_reset),
-                  ("만료된 토큰을 위젯이 직접 갱신", token), ("Windows 시작 시 자동 실행", autostart))
-        for i, (label, var) in enumerate(checks, start=4):
-            ttk.Checkbutton(frm, text=label, variable=var).grid(row=i, column=0, columnspan=2, sticky="w", pady=2)
+    TOGGLES = (("notify", "한도에 가까워지면 알림"), ("notify_reset", "알렸던 한도가 리셋되면 알림"),
+               ("token_refresh", "만료된 토큰을 위젯이 직접 갱신"), ("autostart", "Windows 시작 시 자동 실행"))
 
-        def close():
-            self.dialog_open = False
-            win.destroy()
+    def __init__(self, app):
+        self.app, self.scale = app, app.scale
+        s = app.settings
+        self.v = {"theme": s["theme"], "icon_mode": s["icon_mode"], "minutes": max(s["refresh_sec"] // 60, 1),
+                  "notify": s["notify"], "notify_reset": s["notify_reset"],
+                  "token_refresh": s["token_refresh"], "autostart": autostart_enabled()}
+        self.error = ""
+        self.hits = []       # ((x0, y0, x1, y1), 클릭 시 실행할 함수)
+        self.closed = False
+        self.raw = capture_corner(self.scale)  # 테마를 바꿔 볼 때 다시 흐리게 하려고 원본을 둔다
+        self.bg_photo = None
 
-        def save():
-            try:
-                ths = core.parse_thresholds(thresholds.get())
-                mins = int(minutes.get())
-                if not 1 <= mins <= 60:
-                    raise ValueError
-            except ValueError:
-                messagebox.showerror("설정", "갱신 주기는 1~60 분, 알림 기준은 1~100 사이 숫자를\n쉼표로 구분해 적어 주세요.",
-                                     parent=win)
-                return
-            rev = lambda labels, v: next(k for k, t in labels.items() if t == v)  # noqa: E731
-            self.settings = core.normalize_settings({
-                "refresh_sec": mins * 60, "theme": rev(THEME_LABELS, theme.get()),
-                "icon_mode": rev(ICON_LABELS, icon.get()), "alert_thresholds": ths,
-                "notify": notify.get(), "notify_reset": notify_reset.get(), "token_refresh": token.get(),
-            })
-            storage.save_settings(self.settings)
-            set_autostart(autostart.get())
-            self._schedule()
-            if self.results:
-                ok = [r for r in self.results if "error" not in r]
-                self.tray.icon = make_icon(self.settings["icon_mode"], core.max_pct(self.results),
-                                           error=not ok)
-            log.info("설정 저장")
-            close()
+        self.win = tk.Toplevel(app.root)
+        self.win.withdraw()
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.canvas = tk.Canvas(self.win, highlightthickness=0, bd=0)
+        self.canvas.pack()
+        self.entry = tk.Entry(self.canvas, font=("Malgun Gothic", 9), relief="flat", bd=0, highlightthickness=1)
+        self.entry.insert(0, ", ".join(map(str, s["alert_thresholds"])))
+        self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<Motion>", lambda e: self.canvas.config(cursor="hand2" if self._hit(e) else ""))
+        self.win.bind("<Escape>", lambda e: self.close())
+        self.win.bind("<Return>", lambda e: self.save())
+        self.win.bind("<FocusOut>", lambda e: self.win.after(
+            50, lambda: not self.closed and self.win.focus_displayof() is None and self.close()))
+        try:
+            round_corners(self.win)
+        except Exception:  # noqa: BLE001
+            pass
+        self._apply_theme()
+        self.win.deiconify()
+        self.win.lift()
+        self.win.focus_force()
 
-        btns = ttk.Frame(frm)
-        btns.grid(row=8, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text="취소", command=close).pack(side="right")
-        ttk.Button(btns, text="저장", command=save).pack(side="right", padx=(0, 8))
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.update_idletasks()
+    def _apply_theme(self):
+        """고른 테마로 패널 자신을 바로 다시 칠한다 (미리 보기)."""
+        t = self.v["theme"]
+        pal = self.pal = PALETTES[system_theme() if t == "auto" else t]
+        self.backdrop = blurred(self.raw, pal) if self.raw else None
+        self.win.configure(bg=pal["solid"])
+        self.canvas.configure(bg=pal["solid"])
+        self.entry.configure(bg=pal["field"], fg=pal["fg"], insertbackground=pal["fg"],
+                             highlightbackground=pal["field_line"], highlightcolor=pal["ok"])
+        self.render()
+
+    def _hit(self, e):
+        for (a, b, c2, d), fn in self.hits:
+            if a <= e.x <= c2 and b <= e.y <= d:
+                return fn
+        return None
+
+    def _click(self, e):
+        fn = self._hit(e)
+        if fn:
+            fn()
+        else:
+            self.canvas.focus_set()  # 입력칸 밖을 누르면 입력 포커스 해제
+
+    def _set(self, key, value):
+        self.v[key] = value
+        if key == "theme":
+            self._apply_theme()
+        else:
+            self.render()
+
+    def render(self):
+        c, s, pal, v = self.canvas, self.scale, self.pal, self.v
+        FG, DIM = pal["fg"], pal["dim"]
+        px = lambda n: int(round(n * s))  # noqa: E731
+        c.delete("all")
+        self.hits = hits = []
+        W, pad, margin = px(350), px(18), px(12)
+        x0, x1 = pad, W - pad
+        shapes = []
+        font = ("Malgun Gothic", 9)
+        measure = self.app.label_font.measure
+
+        def text(x, y, t, color=FG, f=font, anchor="w", **kw):
+            return c.bbox(c.create_text(x, y, text=t, fill=color, font=f, anchor=anchor, **kw))
+
+        def segmented(mid, key, options):
+            """오른쪽 정렬된 선택 버튼 묶음."""
+            h, gap = px(26), px(2)
+            widths = [measure(label) + px(22) for _, label in options]
+            total = sum(widths) + gap * (len(options) + 1)
+            left = x1 - total
+            shapes.append(("bar", (left, mid - h // 2, x1, mid + h // 2), pal["track"]))
+            x = left + gap
+            for (value, label), w in zip(options, widths):
+                box = (x, mid - h // 2 + gap, x + w, mid + h // 2 - gap)
+                if v[key] == value:
+                    shapes.append(("bar", box, pal["seg"]))
+                text(x + w // 2, mid, label, FG if v[key] == value else DIM, anchor="center")
+                hits.append((box, lambda value=value: self._set(key, value)))
+                x += w
+
+        def button(right, mid, label, w, fill, color, fn, h=px(28)):
+            box = (right - w, mid - h // 2, right, mid + h // 2)
+            shapes.append(("bar", box, fill))
+            text(right - w // 2, mid, label, color, anchor="center")
+            hits.append((box, fn))
+            return box[0]
+
+        y = px(14)
+        bb = c.bbox(c.create_text(x0, y, text="설정", fill=FG, font=("Malgun Gothic", 11, "bold"), anchor="nw"))
+        y = bb[3] + px(10)
+        shapes.append(("line", (x0, y, x1, y), pal["line"]))
+        row = px(38)
+
+        mid = y + row // 2 + px(2)
+        text(x0, mid, "테마")
+        segmented(mid, "theme", list(THEME_LABELS.items()))
+        y += row
+
+        mid = y + row // 2
+        text(x0, mid, "트레이 아이콘")
+        segmented(mid, "icon_mode", list(ICON_LABELS.items()))
+        y += row
+
+        mid = y + row // 2
+        text(x0, mid, "자동 갱신 주기")
+        d = px(24)
+        step = lambda delta: lambda: self._set("minutes", min(max(v["minutes"] + delta, 1), 60))  # noqa: E731
+        button(x1, mid, "+", d, pal["btn"], FG, step(1), h=d)
+        text(x1 - d - px(30), mid, f"{v['minutes']}분", anchor="center")
+        button(x1 - d - px(60), mid, "−", d, pal["btn"], FG, step(-1), h=d)
+        y += row
+
+        mid = y + row // 2
+        text(x0, mid, "알림 기준 (%)")
+        c.create_window(x1, mid, window=self.entry, anchor="e", width=px(110), height=px(24))
+        y += row - px(4)
+        bb = text(x1, y + px(4), "쉼표로 구분 · 비우면 알리지 않음", DIM, ("Malgun Gothic", 8), "e")
+        y = bb[3] + px(10)
+        shapes.append(("line", (x0, y, x1, y), pal["line"]))
+        y += px(4)
+
+        tw, th = px(34), px(18)
+        for key, label in self.TOGGLES:
+            mid = y + px(16)
+            text(x0, mid, label)
+            on = v[key]
+            shapes.append(("bar", (x1 - tw, mid - th // 2, x1, mid + th // 2), pal["ok"] if on else pal["off"]))
+            kx = x1 - th + px(2) if on else x1 - tw + px(2)
+            shapes.append(("dot", (kx, mid - th // 2 + px(2), kx + th - px(4), mid + th // 2 - px(2)), "#ffffff"))
+            hits.append(((x0, mid - px(15), x1, mid + px(15)), lambda key=key: self._set(key, not v[key])))
+            y += px(32)
+
+        if self.error:
+            bb = text(x0, y + px(10), self.error, pal["bad"], ("Malgun Gothic", 8), "w", width=x1 - x0)
+            y = bb[3]
+        y += px(12)
+        mid = y + px(14)
+        left = button(x1, mid, "저장", px(72), pal["ok"], "#ffffff", self.save)
+        button(left - px(8), mid, "취소", px(72), pal["btn"], FG, self.close)
+        H = mid + px(14) + px(16)
+
+        self.bg_photo = compose(self.backdrop, W, H, margin, shapes, pal, px)
+        c.tag_lower(c.create_image(0, 0, image=self.bg_photo, anchor="nw"))
+        c.config(width=W, height=H)
         _, _, right, bottom = work_area()
-        win.geometry(f"+{right - win.winfo_width() - 40}+{bottom - win.winfo_height() - 80}")
-        win.focus_force()
+        self.win.geometry(f"{W}x{H}+{right - W - margin}+{bottom - H - margin}")
+
+    def save(self):
+        app, v = self.app, self.v
+        try:
+            ths = core.parse_thresholds(self.entry.get())
+        except ValueError:
+            self.error = "알림 기준은 1~100 사이 숫자를 쉼표로 구분해 적어 주세요."
+            self.render()
+            return
+        app.settings = core.normalize_settings({
+            "refresh_sec": v["minutes"] * 60, "theme": v["theme"], "icon_mode": v["icon_mode"],
+            "alert_thresholds": ths, "notify": v["notify"], "notify_reset": v["notify_reset"],
+            "token_refresh": v["token_refresh"],
+        })
+        storage.save_settings(app.settings)
+        set_autostart(v["autostart"])
+        app._schedule()
+        if app.results:
+            ok = [r for r in app.results if "error" not in r]
+            app.tray.icon = make_icon(app.settings["icon_mode"], core.max_pct(app.results), error=not ok)
+        log.info("설정 저장")
+        self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.app.dialog_open = False
+        self.win.destroy()
 
 
 def main():
