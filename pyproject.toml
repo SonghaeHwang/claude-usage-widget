@@ -1,8 +1,15 @@
 [project]
 name = "claude-usage-widget"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
     "pillow",
     "pystray",
 ]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
