@@ -36,14 +36,16 @@ BLUR_RADIUS = 28
 PALETTES = {
     "light": {
         "fg": "#1d1d1f", "dim": "#4a4844", "solid": "#f3f2ee",
-        "tint": (255, 255, 255, 175), "track": (0, 0, 0, 40), "line": (0, 0, 0, 35),
+        "tint": (230, 231, 237, 170), "track": (0, 0, 0, 40), "line": (0, 0, 0, 35),
+        "glow": 0.42, "shade": 0.07, "edge": (255, 255, 255, 235), "rim": (0, 0, 0, 38),
         "ok": "#cc5f3c", "warn": "#b87400", "bad": "#d03535", "sat": 1.4,
         "seg": (255, 255, 255, 235), "off": (0, 0, 0, 70), "btn": (0, 0, 0, 30),
         "field": "#ffffff", "field_line": "#c9c7c2",
     },
     "dark": {
         "fg": "#f2f1ee", "dim": "#b5b1a9", "solid": "#232325",
-        "tint": (26, 26, 28, 195), "track": (255, 255, 255, 45), "line": (255, 255, 255, 40),
+        "tint": (34, 34, 38, 190), "track": (255, 255, 255, 45), "line": (255, 255, 255, 40),
+        "glow": 0.10, "shade": 0.14, "edge": (255, 255, 255, 60), "rim": (0, 0, 0, 90),
         "ok": "#e98d6e", "warn": "#e3a633", "bad": "#ff6f6f", "sat": 1.2,
         "seg": (255, 255, 255, 75), "off": (255, 255, 255, 70), "btn": (255, 255, 255, 40),
         "field": "#3a3a3c", "field_line": "#5c5c60",
@@ -118,11 +120,38 @@ def capture_corner(scale):
         return None
 
 
+_grain = {}
+
+
+def glass(bg, pal, px):
+    """뒤 화면이 단색(예: 흰 웹페이지)이어도 유리처럼 보이게 하는 재질 효과.
+
+    위는 밝고 아래는 살짝 어두운 그라데이션, 미세한 입자, 밝은 안쪽 테두리와 어두운 바깥 테두리.
+    """
+    W, H = bg.size
+    ramp = Image.linear_gradient("L").resize((W, H))  # 위 0 → 아래 255
+    glow = Image.new("RGBA", (W, H), (255, 255, 255, 0))
+    glow.putalpha(ramp.point(lambda g: int(max(0, 150 - g) / 150 * 255 * pal["glow"])))  # 위쪽 60% 에만
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    shade.putalpha(ramp.point(lambda g: int(g * pal["shade"])))
+    bg = Image.alpha_composite(Image.alpha_composite(bg, glow), shade)
+    if (W, H) not in _grain:  # 다시 그릴 때 입자가 깜빡이지 않게 크기별로 한 번만 만든다
+        _grain.clear()
+        noise = Image.effect_noise((W, H), 22)
+        _grain[(W, H)] = Image.merge("RGBA", (noise, noise, noise, Image.new("L", (W, H), 9)))
+    bg = Image.alpha_composite(bg, _grain[(W, H)])
+    d = ImageDraw.Draw(bg, "RGBA")
+    r, w = px(8), max(px(1), 1)
+    d.rounded_rectangle((0, 0, W - 1, H - 1), radius=r, outline=pal["rim"], width=w)
+    d.rounded_rectangle((w, w, W - 1 - w, H - 1 - w), radius=r, outline=pal["edge"], width=w)
+    return bg
+
+
 def compose(backdrop, W, H, margin, shapes, pal, px):
     """흐린 뒤 화면에서 팝업 자리만 잘라내고 선·게이지·버튼을 반투명으로 합성한다."""
     if backdrop:
         bw, bh = backdrop.size
-        bg = backdrop.crop((bw - margin - W, bh - margin - H, bw - margin, bh - margin))
+        bg = glass(backdrop.crop((bw - margin - W, bh - margin - H, bw - margin, bh - margin)), pal, px)
     else:
         bg = Image.new("RGBA", (W, H), pal["solid"])
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
